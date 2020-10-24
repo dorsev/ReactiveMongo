@@ -1,11 +1,11 @@
 package reactivemongo
 
+import org.scalacheck.Properties
+
 import scala.concurrent.{ ExecutionContext, Future }
 import scala.concurrent.duration._
-
 import reactivemongo.api.bson.{ BSONArray, BSONDocument }
 import reactivemongo.api.collections.BulkOps._
-
 import org.specs2.concurrent.ExecutionEnv
 
 final class BulkOpsSpec(implicit ee: ExecutionEnv)
@@ -182,4 +182,14 @@ final class BulkOpsSpec(implicit ee: ExecutionEnv)
     }
   }
   section("unit")
+}
+
+final class BulkSpecProperties extends Properties("BulkOps") {
+
+  //  import org.scalacheck.Properties
+  import org.scalacheck.Prop.forAll
+  //  import java.lang.Math
+  property("asdas") = forAll { (a: String, num: Int) =>
+    num * num + a == num * num + a
+  }
 }
