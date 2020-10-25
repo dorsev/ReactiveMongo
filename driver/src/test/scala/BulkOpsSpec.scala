@@ -8,8 +8,61 @@ import reactivemongo.api.bson.{ BSONArray, BSONDocument }
 import reactivemongo.api.collections.BulkOps._
 import org.specs2.concurrent.ExecutionEnv
 
+//import scala.collection.immutable
+
+object A extends App {
+  def collect(bulk: BulkProducer[BSONDocument]): List[BSONDocument] = {
+    def helper(
+      bulkProducer: Option[BulkProducer[BSONDocument]],
+      lst: List[BSONDocument]): List[BSONDocument] = {
+      bulkProducer match {
+        case Some(value) =>
+          val list = value()
+          list.fold(
+            _ =>
+              helper(None, lst),
+            a => {
+              val docs = lst ++ a.bulk
+              helper(a.next, docs)
+            })
+        case None =>
+          lst
+      }
+    }
+    helper(Some(bulk), List[BSONDocument]())
+  }
+
+  val bson = BSONDocument("hello_world_this_is_a_long_key" * 1000 -> 0)
+  val lst: List[BSONDocument] = List.fill(1500)(bson)
+  val bsonArray = BSONDocument("hello_world_this_is_a_long_key" -> BSONArray(lst))
+  val documents: List[BSONDocument] = List.fill(1500)(bsonArray)
+
+  val result: BulkProducer[BSONDocument] =
+    bulks[BSONDocument](documents, 16 * 1000 * 1000, 1000)(_.byteSize)
+
+  val documents2 = collect(result)
+  println(s"calculated ${documents2.size} , documents : ${documents.size}")
+  documents2 == documents
+
+}
+
 final class BulkOpsSpec(implicit ee: ExecutionEnv)
   extends org.specs2.mutable.Specification {
+
+  def collect(bulk: BulkProducer[BSONDocument]): List[BSONDocument] = {
+    def helper(
+      bulkProducer: Option[BulkProducer[BSONDocument]],
+      lst: List[BSONDocument]): List[BSONDocument] = {
+      bulkProducer match {
+        case Some(value) =>
+          val list = value()
+          list.fold(_ => helper(None, lst), a => helper(a.next, lst ++ a.bulk))
+        case None =>
+          lst
+      }
+    }
+    helper(Some(bulk), List[BSONDocument]())
+  }
 
   "Bulk operations" title
 
@@ -18,18 +71,20 @@ final class BulkOpsSpec(implicit ee: ExecutionEnv)
 
   val bsonSize1 = BSONArray(doc1, doc1).byteSize - BSONArray.empty.byteSize
 
-  def producer1 = bulks[BSONDocument](
-    documents = Seq.empty,
-    maxBsonSize = bsonSize1,
-    maxBulkSize = 2)(_.byteSize)
+  def producer1 =
+    bulks[BSONDocument](
+      documents = Seq.empty,
+      maxBsonSize = bsonSize1,
+      maxBulkSize = 2)(_.byteSize)
 
   val bsonSize2 = BSONArray(doc2, doc2).byteSize - BSONArray.empty.byteSize
 
   val producer2Docs = Seq(doc1, doc1, doc2, doc1, doc2)
-  def producer2 = bulks[BSONDocument](
-    documents = producer2Docs,
-    maxBsonSize = bsonSize2,
-    maxBulkSize = 2)(_.byteSize)
+  def producer2 =
+    bulks[BSONDocument](
+      documents = producer2Docs,
+      maxBsonSize = bsonSize2,
+      maxBulkSize = 2)(_.byteSize)
 
   implicit val docOrdering = math.Ordering.by[BSONDocument, Int](_.hashCode)
 
@@ -39,44 +94,61 @@ final class BulkOpsSpec(implicit ee: ExecutionEnv)
   "Preparation" should {
     "produce 1 single empty stage" in {
       producer1 must beLike[BulkProducer[BSONDocument]] {
-        case prod1 => prod1() must beRight.like {
-          case BulkStage(bulk, None) => bulk must beEmpty
-        }
+        case prod1 =>
+          prod1() must beRight.like {
+            case BulkStage(bulk, None) => bulk must beEmpty
+          }
       }
+    }
+
+    "produce bulks propertly" in {
+      val bson = BSONDocument("hello_world_this_is_a_long_key" * 1000 -> 0)
+      val lst: List[BSONDocument] = List.fill(1500)(bson)
+      val bsonArray = BSONDocument("hello_world_this_is_a_long_key" -> BSONArray(lst))
+      val documents: List[BSONDocument] = List.fill(1500)(bsonArray)
+
+      val result: BulkProducer[BSONDocument] =
+        bulks[BSONDocument](documents, 16 * 1000 * 1000, 1000)(_.byteSize)
+
+      val documents2 = collect(result)
+      println(s"calculated ${documents2.size} , documents : ${documents.size}")
+      documents2 == documents
     }
 
     s"produce 1 bulk [#1, #1] then fail as #2(${doc2.byteSize}) > ${bsonSize1}" in {
       bulks[BSONDocument](
         documents = Seq(doc1, doc1, doc2, doc1),
         maxBsonSize = bsonSize1,
-        maxBulkSize = 2)(_.byteSize).
-        aka("bulk producer") must beLike[BulkProducer[BSONDocument]] {
-          case prod1 => prod1() must beRight.like {
-            case BulkStage(bulk1, Some(prod2)) =>
-              bulk1.toList must_== List(doc1, doc1) and {
-                prod2() must beLeft(
-                  s"size of document #2 exceed the maxBsonSize: ${doc2.byteSize} + 3 > ${bsonSize1}")
-              }
-          }
+        maxBulkSize = 2)(_.byteSize)
+        .aka("bulk producer") must beLike[BulkProducer[BSONDocument]] {
+          case prod1 =>
+            prod1() must beRight.like {
+              case BulkStage(bulk1, Some(prod2)) =>
+                bulk1.toList must_== List(doc1, doc1) and {
+                  prod2() must beLeft(
+                    s"size of document #2 exceed the maxBsonSize: ${doc2.byteSize} + 3 > ${bsonSize1}")
+                }
+            }
         }
     }
 
     s"produce 5 bulks [#1, #1, #2, #1, #2]" in {
       producer2 must beLike[BulkProducer[BSONDocument]] {
-        case prod1 => prod1() must beRight.like {
-          case BulkStage(bulk1, Some(prod2)) =>
-            bulk1.toList must_== List(doc1, doc1) and {
-              prod2() must beRight.like {
-                case BulkStage(bulk2, Some(prod3)) =>
-                  bulk2.toList must_== List(doc2, doc1) and {
-                    prod3() must beRight.like {
-                      case BulkStage(bulk3, None) =>
-                        bulk3.toList must_== List(doc2)
+        case prod1 =>
+          prod1() must beRight.like {
+            case BulkStage(bulk1, Some(prod2)) =>
+              bulk1.toList must_== List(doc1, doc1) and {
+                prod2() must beRight.like {
+                  case BulkStage(bulk2, Some(prod3)) =>
+                    bulk2.toList must_== List(doc2, doc1) and {
+                      prod3() must beRight.like {
+                        case BulkStage(bulk3, None) =>
+                          bulk3.toList must_== List(doc2)
+                      }
                     }
-                  }
+                }
               }
-            }
-        }
+          }
       }
     }
 
@@ -86,7 +158,8 @@ final class BulkOpsSpec(implicit ee: ExecutionEnv)
         maxBsonSize = doc1.byteSize,
         maxBulkSize = 2)(_.byteSize) must beLike[BulkProducer[BSONDocument]] {
         case prod1 =>
-          prod1() must beLeft(s"size of document #0 exceed the maxBsonSize: ${doc1.byteSize} + 3 > ${doc1.byteSize}")
+          prod1() must beLeft(
+            s"size of document #0 exceed the maxBsonSize: ${doc1.byteSize} + 3 > ${doc1.byteSize}")
       }
     }
 
@@ -119,8 +192,8 @@ final class BulkOpsSpec(implicit ee: ExecutionEnv)
       }
 
       "for producer2" in {
-        app(producer2, ee.ec) must beEqualTo(Seq(
-          Seq(doc1, doc1), Seq(doc2, doc1), Seq(doc2))).await
+        app(producer2, ee.ec) must beEqualTo(
+          Seq(Seq(doc1, doc1), Seq(doc2, doc1), Seq(doc2))).await
       }
     }
 
@@ -139,8 +212,8 @@ final class BulkOpsSpec(implicit ee: ExecutionEnv)
       }
 
       "for producer2" in {
-        app(producer2, ee.ec).map(
-          _.flatten.sorted) must beEqualTo(producer2Docs.sorted).await
+        app(producer2, ee.ec).map(_.flatten.sorted) must beEqualTo(
+          producer2Docs.sorted).await
       }
     }
 
@@ -176,8 +249,8 @@ final class BulkOpsSpec(implicit ee: ExecutionEnv)
       }
 
       "for producer2" in {
-        app(producer2, ee.ec).map(
-          _.flatten.size) must beLessThan(producer2Docs.size).await
+        app(producer2, ee.ec).map(_.flatten.size) must beLessThan(
+          producer2Docs.size).await
       }
     }
   }
@@ -186,10 +259,34 @@ final class BulkOpsSpec(implicit ee: ExecutionEnv)
 
 final class BulkSpecProperties extends Properties("BulkOps") {
 
-  //  import org.scalacheck.Properties
-  import org.scalacheck.Prop.forAll
-  //  import java.lang.Math
-  property("asdas") = forAll { (a: String, num: Int) =>
-    num * num + a == num * num + a
+  def collect(bulk: BulkProducer[BSONDocument]): List[BSONDocument] = {
+    def helper(
+      bulkProducer: Option[BulkProducer[BSONDocument]],
+      lst: List[BSONDocument]): List[BSONDocument] = {
+      bulkProducer match {
+        case Some(value) =>
+          val list = value()
+          list.fold(_ => helper(None, lst), a => helper(a.next, lst ++ a.bulk))
+        case None =>
+          lst
+      }
+    }
+    helper(Some(bulk), List[BSONDocument]())
   }
+
+  import org.scalacheck.Prop.forAll
+  property("asdas") = forAll { (a: String, num: Int) =>
+    val bson = BSONDocument(a * 100 -> num)
+    val lst: List[BSONDocument] = List.fill(1500)(bson)
+    val bsonArray = BSONDocument("hello_world_this_is_a_long_key" -> BSONArray(lst))
+    val documents: List[BSONDocument] = List.fill(1500)(bsonArray)
+
+    val result: BulkProducer[BSONDocument] =
+      bulks[BSONDocument](documents, 16 * 1000 * 1000, 1000)(_.byteSize)
+
+    val documents2 = collect(result)
+    println(s"calculated ${documents2.size} , documents : ${documents.size}")
+    documents2 == documents
+  }
+
 }
